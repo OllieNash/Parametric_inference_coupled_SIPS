@@ -5,8 +5,8 @@ from IPS_generation import IPS_generation
 
 
 #Parameters & inputs 
-N = 10 #Number of particles
-T = 200 #Time 
+N = 100 #Number of particles
+T = 100 #Time 
 h = 0.01 #time step 
 num_steps = int(T/h) #Number of time steps
 theta_1 = 1 #Mean reversion parameter for X
@@ -149,3 +149,6 @@ plt.title('L2 Loss of Theta Estimate Over Time')
 plt.xlabel('Time Steps')
 plt.ylabel('L2 Loss')
 plt.show()
+
+print(f"Emperical distribution for x: {mu_x_full}")
+print(f"Emperical distribution for y: {mu_y_full}")
