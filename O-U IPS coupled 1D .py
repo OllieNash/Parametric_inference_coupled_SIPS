@@ -2,11 +2,11 @@ import numpy as np
 import matplotlib.pyplot as plt 
 import scipy.stats as stats
 from IPS_generation import IPS_generation
-
+from plotter import plot_likelihood
 
 #Parameters & inputs 
-N = 100 #Number of particles
-T = 100 #Time 
+N = 1 #Number of particles
+T = 300 #Time 
 h = 0.01 #time step 
 num_steps = int(T/h) #Number of time steps
 theta_1 = 1 #Mean reversion parameter for X
@@ -37,12 +37,14 @@ X = np.zeros((N,num_steps+1))
 X[:, 0] = np.random.normal(0,0.45,size=N) #Initial distribution for first system 
 Y = np.zeros((N,num_steps+1))
 Y[:, 0] = np.random.normal(0,0.45,size=N) #Initial distribution for second system 
-gamma_estimates = np.zeros((N,num_steps+1))
-theta_estimates = np.zeros((N,num_steps+1))
 
 
 #Simulate the system using Euler-Maruyama method
 def sim(mu_x,mu_y):
+    gamma_estimates = np.zeros((N,num_steps+1))
+    theta_estimates = np.zeros((N,num_steps+1))
+    L_x = np.zeros((N,num_steps+1))
+    L_y = np.zeros((N,num_steps+1))
     for t in range(num_steps):
         print(t)
         dW_X = np.random.normal(loc=0, scale=np.sqrt(h), size=N)
@@ -73,9 +75,13 @@ def sim(mu_x,mu_y):
 
         theta_hat = (2*N_1-gamma*N_2-alpha_2*N_3)/(2*N_4)
         theta_estimates[:,t+1] = theta_hat
-    return theta_estimates, gamma_estimates
 
-theta_estimates, gamma_estimates = sim(mu_x_full, mu_y_full)
+        L_x[:,t+1] = -(beta/2)*(np.sum(drift_x(X_slice[:,1:],mu_x)*(X_delta),axis=1) + ((1/2)* np.sum(drift_x(X_slice[:,1:],mu_x)**2))*h)*(beta/2)
+        L_y[:,t+1] = -(beta/2)*(np.sum(drift_y(Y_slice[:,1:],mu_y)*(Y_delta),axis=1) + ((1/2)* np.sum(drift_y(Y_slice[:,1:],mu_y)**2))*h)*(beta/2)
+
+    return theta_estimates, gamma_estimates, L_x, L_y
+
+theta_estimates, gamma_estimates, likelihood_x,likelihood_y = sim(mu_x_full, mu_y_full)
 
 
 #Cross interaction outputs 
@@ -84,9 +90,9 @@ gamma_hat = np.mean(gamma_estimates[:,-1])
 print(f"Estimated gamma: {gamma_hat}")
 print(f"Gamma standard deviation: {np.std(gamma_estimates[:,-1])}")
 
-print(gamma_estimates, type(gamma_estimates))
-#print(theta_estimates, type(theta_estimates))
 
+#Plotting ourblikelihood
+plot_likelihood(gamma_estimates,gamma_hat,likelihood_x)
 
 #plotting the histogram of alpha estimates
 plt.hist(gamma_estimates[:,-1], bins=20, density=True, alpha=0.7)
@@ -98,7 +104,7 @@ plt.ylabel('Density')
 plt.legend()
 plt.show() 
 
-#Plotting estimators over time
+#Plotting alpha estimators over time
 mean_gamma_over_time = np.mean(gamma_estimates, axis=0)
 plt.hlines(gamma, color='r', linestyle='dashed', linewidth=2, label='True gamma',xmin=0,xmax=num_steps)
 plt.plot(mean_gamma_over_time[50:])
@@ -116,12 +122,14 @@ plt.ylabel('L2 Loss')
 plt.show()
 
 
-
 # Reversion estimation output 
+
 
 theta_hat = np.mean(theta_estimates[:,-1])
 print(f"Estimated theta: {theta_hat}")
-print(f"Gamma standard deviation: {np.std(theta_estimates[:,-1])}")
+print(f"Gamma theta deviation: {np.std(theta_estimates[:,-1])}")
+
+plot_likelihood(theta_estimates,theta_hat,likelihood_y)
 
 #plotting the histogram of alpha estimates
 plt.hist(theta_estimates[:,-1], bins=20, density=True, alpha=0.7)
@@ -152,3 +160,5 @@ plt.show()
 
 print(f"Emperical distribution for x: {mu_x_full}")
 print(f"Emperical distribution for y: {mu_y_full}")
+
+print(f"final likehilood value: {likelihood_x[-1][-1]}")

@@ -51,6 +51,8 @@ for t in range(num_steps):
     M_3 = np.sum((X_slice-0)*(X_slice-0),axis=1)*h
     M_4 = np.sum((X_slice[:, 1:] -0)* X_delta, axis=1)
 
+
+
     gamma_hat = (2*M_4 - 2*theta_1*M_2 - alpha_1 * M_3) / M_1
     gamma_estimates[:, t+1] = gamma_hat
 
