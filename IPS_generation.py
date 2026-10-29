@@ -1,7 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt 
 import scipy.stats as stats
-
+from tqdm import tqdm, trange
 
 #Parameters & inputs 
 N = 1000 #Number of particles
@@ -39,8 +39,7 @@ def IPS_generation(N,num_steps):
     Y_est[:, 0] = np.random.normal(0,0.45,size=N) #Initial distribution for second system with actual mu 
 
 
-    for t in range(num_steps):
-        print(t)
+    for t in trange(num_steps):
         dW_X = np.random.normal(loc=0, scale=np.sqrt(h), size=N)
         X[:, t+1] = X[:, t] + drift_actual_mu(theta_1,alpha_1,gamma,X[:, t], Y[:,t],mu_x) * h + diffusion() * dW_X
         

@@ -5,8 +5,8 @@ from IPS_generation import IPS_generation
 from plotter import plot_likelihood
 
 #Parameters & inputs 
-N = 1 #Number of particles
-T = 300 #Time 
+N = 10 #Number of particles
+T = 100 #Time 
 h = 0.01 #time step 
 num_steps = int(T/h) #Number of time steps
 theta_1 = 1 #Mean reversion parameter for X
@@ -31,7 +31,7 @@ def drift_y(x, mu):
 def diffusion(x): 
     return np.sqrt(2/beta)
 
-mu_x_partial, mu_y_partial, mu_x_full, mu_y_full = IPS_generation(100,10000)
+mu_x_partial, mu_y_partial, mu_x_full, mu_y_full = IPS_generation(500,10000)
 #Initial positions 
 X = np.zeros((N,num_steps+1))
 X[:, 0] = np.random.normal(0,0.45,size=N) #Initial distribution for first system 
@@ -65,7 +65,7 @@ def sim(mu_x,mu_y):
         M_3 = np.sum((X_slice-0)*(X_slice-0),axis=1)*h
         M_4 = np.sum((X_slice[:, 1:] -0)* X_delta, axis=1)
 
-        gamma_hat = (2*M_4 - 2*theta_1*M_2 - alpha_1 * M_3) / M_1
+        gamma_hat = (2*M_4 - 2*theta_1*M_2 - alpha_1 * M_3) / (M_1)
         gamma_estimates[:, t+1] = gamma_hat #Estimates for the cross-interaction
 
         N_1 = np.sum((Y_slice[:,1:]-mu_y)*Y_delta,axis=1)
@@ -76,8 +76,8 @@ def sim(mu_x,mu_y):
         theta_hat = (2*N_1-gamma*N_2-alpha_2*N_3)/(2*N_4)
         theta_estimates[:,t+1] = theta_hat
 
-        L_x[:,t+1] = -(beta/2)*(np.sum(drift_x(X_slice[:,1:],mu_x)*(X_delta),axis=1) + ((1/2)* np.sum(drift_x(X_slice[:,1:],mu_x)**2))*h)*(beta/2)
-        L_y[:,t+1] = -(beta/2)*(np.sum(drift_y(Y_slice[:,1:],mu_y)*(Y_delta),axis=1) + ((1/2)* np.sum(drift_y(Y_slice[:,1:],mu_y)**2))*h)*(beta/2)
+        L_x[:,t+1] = -(beta/2)*(np.sum(drift_x(X_slice[:,1:],mu_x)*(X_delta),axis=1) + ((1/2)* np.sum(drift_x(X_slice[:,1:],mu_x)**2,axis=1))*h)*(beta/2)
+        L_y[:,t+1] = -(beta/2)*(np.sum(drift_y(Y_slice[:,1:],mu_y)*(Y_delta),axis=1) + ((1/2)* np.sum(drift_y(Y_slice[:,1:],mu_y)**2,axis=1))*h)*(beta/2)
 
     return theta_estimates, gamma_estimates, L_x, L_y
 
@@ -91,7 +91,7 @@ print(f"Estimated gamma: {gamma_hat}")
 print(f"Gamma standard deviation: {np.std(gamma_estimates[:,-1])}")
 
 
-#Plotting ourblikelihood
+#Plotting our likelihood
 plot_likelihood(gamma_estimates,gamma_hat,likelihood_x)
 
 #plotting the histogram of alpha estimates
@@ -158,7 +158,7 @@ plt.xlabel('Time Steps')
 plt.ylabel('L2 Loss')
 plt.show()
 
-print(f"Emperical distribution for x: {mu_x_full}")
-print(f"Emperical distribution for y: {mu_y_full}")
+print(f"Empirical distribution for x: {mu_x_full}")
+print(f"Empirical distribution for y: {mu_y_full}")
 
 print(f"final likehilood value: {likelihood_x[-1][-1]}")

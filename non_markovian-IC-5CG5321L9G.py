@@ -2,19 +2,22 @@ import numpy as np
 import matplotlib.pyplot as plt 
 
 #Parameters & inputs
-N = 5 #Number of particles
-T = 10 #Time  
+N = 3 #Number of particles
+T = 100 #Time  
 h = 0.01 #time step
 num_steps = int(T/h) #Number of time steps
 theta = 5 #Mean reversion parameter
-alpha = 1 #interaction strength 
+alpha = 2.5 #interaction strength 
 mu = 0 #true mean 
-beta = 100 #diffusion coefficient 
+beta = 50 #diffusion coefficient 
 
 def drift(x, mu):
     return theta * (mu - x) + alpha * (0 - x) #Expectation of x is 0
 def diffusion(x): 
     return np.sqrt(2/beta)
+
+def drift_SL(x): 
+    return x*(alpha - x**2)
 
 def initial_positions(N):
     X = np.zeros((N,num_steps+1))
@@ -26,12 +29,18 @@ def non_markovian(N, h):
     for t in range(num_steps):
         dW_1 = np.random.normal(loc=0, scale=np.sqrt(h), size=N)
         dW_2 = np.random.normal(loc=0, scale=np.sqrt(h), size=N)
-        X[:, t+1] = X[:, t] + drift(X[:, t], mu) * h + diffusion(X[:, t]) * (dW_1 + dW_2)/2 #**Richardson Extrapolation
+        X[:, t+1] = X[:, t] + drift_SL(X[:, t]) * h + diffusion(X[:, t]) * (dW_1 + dW_2)/2 #**Richardson Extrapolation
     return X
 
+def Euler_maruyama(N,h): 
+    X = initial_positions(N)
+    for t in range(num_steps):
+        dW = np.random.normal(loc=0, scale=np.sqrt(h), size=N)
+        X[:, t+1] = X[:, t] + drift(X[:, t],0) * h + diffusion(X[:, t]) *dW #**Richardson Extrapolation
+    return X
 
-
-X = non_markovian(5,0.01)
+X = non_markovian(3,0.01)
+#X = Euler_maruyama(5,0.01)
 
 #Plotting trajectories of particles
 for i in range(N):
