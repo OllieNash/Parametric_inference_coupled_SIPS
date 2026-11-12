@@ -2,9 +2,11 @@
 
 For population X::
 
-    dX = [theta_1*(mu_x - X) + (alpha_1/2)*(m_X - X) + (gamma/2)*(m_Y - X)] dt + sqrt(2/beta) dW
+    dX = [theta_1*(c_x - X) + (alpha_1/2)*(m_X - X) + (gamma/2)*(m_Y - X)] dt + sqrt(2/beta) dW
 
-and the same for Y with theta_2, alpha_2, mu_y. m_X, m_Y are the population means. Every other
+and the same for Y with theta_2, alpha_2, c_y. c_x, c_y are the centres of the confining
+potentials theta*(x - c)^2/2, the points each population is pulled towards, and m_X, m_Y are the
+population means. The centres are the true means only when gamma = 0 or c_x = c_y. Every other
 model in this repo is a special case of this one (see PRESETS).
 
 Throughout, ``pop`` is a population name ("x" or "y"), ``params`` a dict like PARAMS, and
@@ -16,23 +18,23 @@ from tqdm import trange
 #Parameters & inputs
 PARAMS = dict(
     N = 1, #Number of particles
-    T = 300, #Time
+    T = 500, #Time
     h = 0.01, #time step
     theta_1 = 1, #Mean reversion parameter for X
-    theta_2 = 1.5, #Mean reversion parameter for Y
-    alpha_1 = 1.1, #interaction strength for X
+    theta_2 = 1, #Mean reversion parameter for Y
+    alpha_1 = 1, #interaction strength for X
     alpha_2 = 1, #interaction strength for Y
     gamma = 1, #cross-interaction strength
-    mu_x = 0, #true mean for x
-    mu_y = 0, #true mean for y
-    beta = 5, #diffusion coefficient
-    ic_scale = 0.45, #std of the initial distribution
+    c_x = 0, #centre of the confining potential for X
+    c_y = 0, #centre of the confining potential for Y
+    beta = 8, #diffusion coefficient
+    ic_scale = 0.001, #std of the initial distribution
 )
 
-#(confining parameter, interaction parameter, true mean, other population) for each population
+#(confining parameter, interaction parameter, confining centre, other population) for each population
 POPULATIONS = {
-    "x": ("theta_1", "alpha_1", "mu_x", "y"),
-    "y": ("theta_2", "alpha_2", "mu_y", "x"),
+    "x": ("theta_1", "alpha_1", "c_x", "y"),
+    "y": ("theta_2", "alpha_2", "c_y", "x"),
 }
 
 #Special cases: parameter overrides, the (population, parameter) pairs to estimate, and
@@ -45,8 +47,8 @@ PRESETS = {
     #alpha_1 = 2*alpha there, since the drift here uses alpha_1/2
     "mv_ou": dict(params=dict(N=100, T=100, alpha_1=2, gamma=0, beta=10, ic_scale=0.5),
                   estimate=[("x", "alpha_1")]),
-    #Coupled populations: cross-interaction from X, confining from Y (was O-U IPS coupled 1D .py)
-    "coupled": dict(params=dict(), estimate=[("x", "gamma"), ("y", "theta_2")],
+    #Coupled populations: cross-interaction from X, confining from Y (was O-U IPS coupled 1D .py).
+    "coupled": dict(params=dict(c_x=2), estimate=[("x", "gamma"), ("y", "theta_2")],
                     ips=dict(N=500, T=100)),
 }
 
@@ -69,9 +71,9 @@ def basis(pop, x, params, means):
         {parameter name: phi_p(x)} for the confining, interaction and cross-interaction
         parameters of ``pop``, each the same shape as ``x``.
     """
-    theta, alpha, mu, other = POPULATIONS[pop]
+    theta, alpha, centre, other = POPULATIONS[pop]
     return {
-        theta: params[mu] - x,
+        theta: params[centre] - x,
         alpha: (means[pop] - x)/2,
         "gamma": (means[other] - x)/2,
     }
@@ -85,7 +87,7 @@ def diffusion(params):
     return np.sqrt(2/params["beta"])
 
 
-def simulate(params, means=None):
+def simulate(params, means=None, systems=1):
     """Simulate X and Y with Euler-Maruyama.
 
     Parameters
@@ -95,25 +97,49 @@ def simulate(params, means=None):
     means : dict, optional
         Fixed means m_X, m_Y for the interactions. If None, each step uses the empirical
         means of the particles instead, i.e. the full interacting particle system.
+    systems : int, optional
+        Number of independent copies of the N-particle system. Rows s*N to (s+1)*N - 1 are
+        system s, and with ``means`` None each system uses its own empirical means.
 
     Returns
     -------
     dict
-        {"x": X, "y": Y}, each of shape (N, num_steps+1).
+        {"x": X, "y": Y}, each of shape (systems*N, num_steps+1).
     """
     N, h = params["N"], params["h"]
+    rows = systems*N
     num_steps = int(params["T"]/h)
     paths = {}
     for pop in POPULATIONS:
-        paths[pop] = np.zeros((N, num_steps+1))
-        paths[pop][:, 0] = np.random.normal(0, params["ic_scale"], size=N)
+        paths[pop] = np.zeros((rows, num_steps+1))
+        paths[pop][:, 0] = np.random.normal(0, params["ic_scale"], size=rows)
 
     for t in trange(num_steps, desc="Simulating"):
-        m = means if means is not None else {pop: np.mean(paths[pop][:, t]) for pop in POPULATIONS}
+        m = means if means is not None else {pop: _system_means(X[:, t], N) for pop, X in paths.items()}
         for pop, X in paths.items():
-            dW = np.random.normal(loc=0, scale=np.sqrt(h), size=N)
+            dW = np.random.normal(loc=0, scale=np.sqrt(h), size=rows)
             X[:, t+1] = X[:, t] + drift(pop, X[:, t], params, m)*h + diffusion(params)*dW
     return paths
+
+def _system_means(X, N):
+    """Mean over each system of N consecutive rows of ``X``, repeated back to the shape of ``X``."""
+    return np.repeat(X.reshape(-1, N, *X.shape[1:]).mean(axis=1), N, axis=0)
+
+def empirical_means(paths, N):
+    """Empirical means of each system at the left-point times, to pass as ``means`` to inference.py.
+
+    Parameters
+    ----------
+    paths : dict
+        From :func:`simulate`, with systems of N particles.
+
+    Returns
+    -------
+    dict
+        {"x": m_X, "y": m_Y}, each of shape (systems*N, num_steps): row i holds the means of the
+        system particle i belongs to, at every time step but the last.
+    """
+    return {pop: _system_means(X[:, :-1], N) for pop, X in paths.items()}
 
 def ips_means(params, N, T):
     """Means m_X, m_Y at time T from the full IPS with N particles (was IPS_generation.py).

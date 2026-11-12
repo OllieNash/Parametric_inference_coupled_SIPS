@@ -6,7 +6,7 @@ import sys
 
 import numpy as np
 
-from inference import hessian_eig, likelihood_profile, likelihood_surface, mle_path
+from inference import hessian_eig, likelihood_coefficients, likelihood_profile, likelihood_surface, mle_path
 from model import setup, simulate
 from plotter import (
     L2_loss,
@@ -48,7 +48,13 @@ if PRESET == "coupled":
     e_val, e_vec = hessian_eig(paths, "y", names, params, means)
     print([(e_val[i], e_vec[:, i]) for i in range(len(e_val))])
 
-    surface = likelihood_surface(paths, "y", names, (test_values, test_values), params, means)
-    theta_hat, gamma_hat = np.mean(estimates["theta_2"][:,-1]), np.mean(estimates["gamma"][:,-1])
-    plot_y_likelihood_surface3d(surface, test_values, test_values, theta_hat, gamma_hat)
-    plot_y_likelihood_contour(surface, test_values, test_values, theta_hat, gamma_hat, e_val, e_vec)
+    #Joint MLE of (theta_2, gamma) from Y alone, i.e. the maximum of the surface
+    _, l, Q = likelihood_coefficients(paths, "y", names, params, means)
+    theta_hat, gamma_hat = np.linalg.solve(Q.sum(axis=0), l.sum(axis=0))
+    print(f"Joint MLE from Y: theta_2 {theta_hat}, gamma {gamma_hat} (true {params['theta_2']}, {params['gamma']})")
+
+    surface_values = np.linspace(-5,5,500)
+    true_point = (params["theta_2"], params["gamma"])
+    surface = likelihood_surface(paths, "y", names, (surface_values, surface_values), params, means)
+    plot_y_likelihood_surface3d(surface, surface_values, surface_values, theta_hat, gamma_hat, true_point)
+    plot_y_likelihood_contour(surface, surface_values, surface_values, theta_hat, gamma_hat, e_val, e_vec, true_point)

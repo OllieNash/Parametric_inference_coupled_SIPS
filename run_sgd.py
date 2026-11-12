@@ -8,9 +8,9 @@ from inference import likelihood_profile, sgd_path
 from model import PARAMS, ips_means, simulate
 from plotter import L2_loss, estimates_overtime, plot_likelihood_parameter
 
-params = {**PARAMS, "T": 3000, "mu_x": 0.5}
+params = {**PARAMS, "T": 5000, "c_x": 0.5}
 num_steps = int(params["T"]/params["h"])
-means = ips_means(params, N=5000, T=30)
+means = ips_means(params, N=5000, T=1000)
 paths = simulate(params, means)
 
 #(population, parameter, learning rate decay, values to plot the likelihood at final time against)

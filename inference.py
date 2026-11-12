@@ -4,12 +4,13 @@ The drift is linear in every parameter p, b = b_rest + sum_p p*phi_p, so both me
 phi_p(X_t) and the increments dX_t. All sums are left-point (Ito) sums.
 
 Common arguments: ``paths`` is the output of :func:`model.simulate`, ``pop`` is "x" or "y",
-and ``params``, ``means`` are as in model.py.
+and ``params``, ``means`` are as in model.py. The values of ``means`` may also be arrays that
+broadcast against X_t, e.g. the empirical means from :func:`model.empirical_means`.
 """
 import numpy as np
 from tqdm import trange
 
-from model import basis, drift
+from model import POPULATIONS, basis, diffusion, drift
 
 
 def _increments(paths, pop, names, params, means):
@@ -120,3 +121,62 @@ def hessian_eig(paths, pop, names, params, means):
     """
     _, _, Q = likelihood_coefficients(paths, pop, names, params, means)
     return np.linalg.eigh(Q.sum(axis=0))
+
+
+def mle_per_run(l, Q, N):
+    """MLE of each run, where a run is one simulated system of N particles.
+
+    A run's log-likelihood is the sum over its particles of c + l.p - 1/2 p.Q.p, so its MLE is
+    (sum Q)^-1 sum l, using all N of its particles' paths and no data from other runs.
+
+    Parameters
+    ----------
+    l, Q : ndarray
+        From :func:`likelihood_coefficients`, with rows in systems of N as in :func:`model.simulate`.
+    N : int
+
+    Returns
+    -------
+    estimates : ndarray, shape (M, k)
+        The MLE of each of the M runs.
+    info : ndarray, shape (M, k, k)
+        The observed information sum Q of each run.
+    """
+    k = l.shape[1]
+    info = Q.reshape(-1, N, k, k).sum(axis=1)
+    l_sum = l.reshape(-1, N, k).sum(axis=1)
+    return np.linalg.solve(info, l_sum[..., None])[..., 0], info
+
+def fisher_information(pop, names, params, means=None):
+    """Expected Fisher information of the parameters ``names`` from one particle's path on [0, T].
+
+    I_T = (beta/2) h sum_t E[phi(X_t) phi(X_t)^T], with X_t the Euler-Maruyama chain of
+    :func:`model.simulate` started from N(0, ic_scale^2). The drift is affine in x and in the
+    means, so X_t is Gaussian and its mean m_t and variance v_t follow exact recursions, giving
+    E[phi phi^T] = phi(m_t) phi(m_t)^T + v_t s s^T with s = dphi/dx. Not valid for drifts
+    that are nonlinear in x.
+
+    Parameters
+    ----------
+    means : dict, optional
+        Fixed means m_X, m_Y. If None, the means are E[X_t], E[Y_t] under the McKean-Vlasov
+        limit law, i.e. the N -> infinity limit of the interacting particle system.
+
+    Returns
+    -------
+    ndarray, shape (k, k)
+        k = len(names). sqrt(N)(p_hat - p) -> N(0, I_T^-1) for the MLE from N particles.
+    """
+    h, sigma2 = params["h"], diffusion(params)**2
+    m = {p: 0.0 for p in POPULATIONS}
+    v = params["ic_scale"]**2
+    info = np.zeros((len(names), len(names)))
+    for _ in range(int(params["T"]/h)):
+        current = means if means is not None else m
+        phi_m, phi_0, phi_1 = (np.array([basis(pop, x, params, current)[p] for p in names]) for x in (m[pop], 0, 1))
+        s = phi_1 - phi_0
+        info += (np.outer(phi_m, phi_m) + v*np.outer(s, s))*h
+        kappa = drift(pop, 0, params, current) - drift(pop, 1, params, current)
+        v = (1 - kappa*h)**2*v + sigma2*h
+        m = {p: m[p] + drift(p, m[p], params, current)*h for p in POPULATIONS}
+    return params["beta"]/2*info
