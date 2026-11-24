@@ -8,6 +8,7 @@ and ``params``, ``means`` are as in model.py. The values of ``means`` may also b
 broadcast against X_t, e.g. the empirical means from :func:`model.empirical_means`.
 """
 import numpy as np
+from scipy.linalg import solve_continuous_lyapunov
 from tqdm import trange
 
 from model import POPULATIONS, basis, diffusion, drift
@@ -37,17 +38,87 @@ def mle_path(paths, pop, param, params, means):
     estimates[:, 1:] = np.cumsum(phi[0]*(dX - b_rest*params["h"]), axis=1) / (np.cumsum(phi[0]**2, axis=1)*params["h"])
     return estimates
 
-def sgd_path(paths, pop, param, params, means, initial, lr_decay):
+def learning_rate(s, lr0, lr_decay):
+    """Learning rate lr0*max(s, 1)^-lr_decay at time s (a float or an array of times)."""
+    return lr0*np.maximum(s, 1)**-lr_decay
+
+def sgd_step(estimate, x, x_next, lr, pop, param, params, means):
+    """One online gradient step on the log-likelihood of the increment x -> x_next.
+
+    p <- p + lr * dL/dp, where L = (beta/2) [b (x_next - x) - b^2 h/2] is the log-likelihood of the
+    step, as in :func:`likelihood_coefficients`, so dL/dp = (beta/2) phi_p(x) (x_next - x - b(x) h)
+    with b evaluated at the current estimate. ``estimate``, ``x`` and ``x_next`` have the same
+    shape, one entry per particle.
+    """
+    current = {**params, param: estimate}
+    phi = basis(pop, x, current, means)[param]
+    residual = x_next - x - drift(pop, x, current, means)*params["h"]
+    return estimate + lr*params["beta"]/2*phi*residual
+
+def sgd_step_shared(estimate, x, x_next, lr, N, pop, param, params, means):
+    """One online gradient step of one estimate per system, with the gradient averaged over its N particles.
+
+    ``estimate`` has shape (M,), and ``x``, ``x_next`` shape (M*N,), with system s in rows s*N to (s+1)*N - 1
+    as in :func:`model.simulate`. Averaging keeps the slope of the error recursion of :func:`sgd_step` but
+    divides its noise variance by N (see :func:`sgd_error_variance`).
+    """
+    rep = np.repeat(estimate, N)
+    return estimate + (sgd_step(rep, x, x_next, lr, pop, param, params, means) - rep).reshape(-1, N).mean(axis=1)
+
+def natural_step(estimate, info, s, x, x_next, lr, pop, names, params, means, gain=None):
+    """One natural gradient step on the joint log-likelihood of the increment x -> x_next.
+
+    p <- p + lr G^-1 dL/dp, with G the Fisher information per unit time i = (beta/2) E[phi phi^T]. The step's
+    log-likelihood is c + l.p - 1/2 p.Q.p (:func:`likelihood_coefficients`), so dL/dp = l - Q p and Q is
+    its observed information. The gain G is either
+      - ``gain``, a fixed (k, k) matrix, e.g. the exact i from :func:`fisher_information`, or
+      - if ``gain`` is None, the running average info/(1 + s + h) of the observed information, where ``info``
+        should start at the identity (a prior worth one unit of time).
+    ``gain = np.eye(k)`` gives plain gradient ascent, and with one name in ``names``, the step is :func:`sgd_step`.
+
+    Preconditioning by i^-1 makes the error recursion of :func:`sgd_clt_variance` have slope I and noise
+    covariance i^-1, so (p_hat_s - p)/sqrt(lr_s) -> N(0, v i^-1), with v that of :func:`sgd_clt_variance`
+    for unit information (phi2 = 2/beta). With lr = 1/s (lr0 = 1, lr_decay = 1), v = 1 and
+    Var(p_hat_s) = i^-1/s, the Cramer-Rao bound; the empirical gain is then close to the recursive MLE.
+
+    Parameters
+    ----------
+    estimate : ndarray, shape (M, k)
+        Current estimates of the parameters ``names``, one row per particle.
+    info : ndarray, shape (M, k, k)
+        Running observed information of each particle, updated by this step.
+    s : float
+        Time of x.
+    x, x_next : ndarray, shape (M,)
+
+    Returns
+    -------
+    estimate : ndarray, shape (M, k)
+    info : ndarray, shape (M, k, k)
+    """
+    _, l, Q = likelihood_coefficients({pop: np.stack([x, x_next], axis=1)}, pop, names, params, means)
+    info = info + Q
+    G = gain if gain is not None else info/(1 + s + params["h"])
+    grad = l - np.einsum("mij,mj->mi", Q, estimate)
+    return estimate + lr*np.linalg.solve(G, grad[..., None])[..., 0], info
+
+def sgd_path(paths, pop, param, params, means, initial, lr_decay, lr0=0.1):
     """Online gradient ascent on the log-likelihood, one step per time step (was OU IPS coupled online.py).
 
-    p <- p + lr * sqrt(beta/2) * phi_p (dX - b h), with learning rate min(0.1, 0.1*t^-lr_decay).
+    p <- p + lr * (beta/2) * phi_p (dX - b h), i.e. lr times the gradient of the log-likelihood of
+    the step (:func:`sgd_step`), with learning rate lr0*max(s, 1)^-lr_decay, where s = t*h is the
+    time (not the step index), so the schedule does not depend on h.
 
     Parameters
     ----------
     initial : ndarray, shape (N,)
         Starting estimate for each particle.
     lr_decay : float
-        Exponent of the learning rate decay.
+        Exponent of the learning rate decay, in (0, 1]. The estimate converges in mean square,
+        with variance of order lr/2 for lr_decay < 1, so a small exponent converges slowly.
+        See :func:`sgd_clt_variance`.
+    lr0 : float, optional
+        Learning rate up to time 1.
 
     Returns
     -------
@@ -58,12 +129,106 @@ def sgd_path(paths, pop, param, params, means, initial, lr_decay):
     estimates = np.zeros_like(X)
     estimates[:, 0] = initial
     for t in trange(X.shape[1]-1, desc=f"Online estimate of {param}"):
-        lr = 0.1*max(t, 1)**-lr_decay
-        current = {**params, param: estimates[:, t]}
-        phi = basis(pop, X[:, t], current, means)[param]
-        residual = X[:, t+1] - X[:, t] - drift(pop, X[:, t], current, means)*h
-        estimates[:, t+1] = estimates[:, t] + lr*np.sqrt(params["beta"]/2)*phi*residual
+        lr = learning_rate(t*h, lr0, lr_decay)
+        estimates[:, t+1] = sgd_step(estimates[:, t], X[:, t], X[:, t+1], lr, pop, param, params, means)
     return estimates
+
+def sgd_clt_variance(s, lr0, lr_decay, phi2, beta):
+    """Variance of (p_hat_s - p)/sqrt(lr_s) for the online estimate of :func:`sgd_path`, at time s.
+
+    With fixed means and the drift linear in p, the residual of a step is (p - p_hat) phi h + sigma dW,
+    with sigma^2 = 2/beta, so the error e = p_hat - p of :func:`sgd_step` follows
+
+        e <- (1 - lr (beta/2) phi^2 h) e + lr sqrt(beta/2) phi dW.
+
+    This is a Robbins-Monro recursion whose mean-field slope and noise intensity are both
+    i = (beta/2) E[phi^2], the Fisher information per unit time. Writing Var(e_s) = lr_s v_s, for large s
+
+        v_s = 1/(2 - lr_decay/(i lr_s s)),    lr_s s = lr0 s^(1 - lr_decay).
+
+    As s -> inf, e_s/sqrt(lr_s) -> N(0, Sigma) with
+      - Sigma = 1/2 for lr_decay in (0, 1), whatever beta, lr0 and E[phi^2] (Kushner & Yin 2003, ch. 10);
+      - Sigma = 1/(2 - 1/(lr0 i)) for lr_decay = 1 (cf. Sirignano & Spiliopoulos 2020), provided
+        2 lr0 i > 1. Otherwise the error decays slower than sqrt(lr_s). With lr0 = 1/i, Sigma = 1 and
+        Var(e_s) = 1/(i s), the Cramer-Rao bound.
+
+    Parameters
+    ----------
+    s : float or ndarray
+        Time(s); np.inf gives the limit Sigma.
+    lr0, lr_decay : float
+        As in :func:`sgd_path`.
+    phi2 : float
+        Stationary second moment E[phi_p(X)^2] of the basis function of the parameter.
+    beta : float
+
+    Returns
+    -------
+    float or ndarray
+        v_s, np.inf where it is not positive.
+    """
+    denominator = 2 - lr_decay/(beta/2*phi2*lr0*np.maximum(s, 1)**(1 - lr_decay))
+    with np.errstate(divide="ignore"):
+        return np.where(denominator > 0, 1/denominator, np.inf)
+
+def gain_clt_covariance(s, lr0, lr_decay, fisher, gain=None):
+    """Covariance of (p_hat_s - p)/sqrt(lr_s) for the online estimate of :func:`natural_step` with a fixed gain G.
+
+    The matrix version of :func:`sgd_clt_variance`. The error recursion has slope A = G^-1 i and noise
+    covariance S = G^-1 i G^-1 per unit time, with i the Fisher information per unit time, so for large s the
+    covariance solves the Lyapunov equation
+
+        (A - c_s I) Sigma + Sigma (A - c_s I)^T = S,    c_s = lr_decay/(2 lr_s s) = lr_decay/(2 lr0 s^(1 - lr_decay)).
+
+    c_s -> 0 for lr_decay < 1 and c = 1/(2 lr0) for lr_decay = 1. For G = i, Sigma = v i^-1 with v from
+    :func:`sgd_clt_variance` at unit information; for G = I and lr_decay < 1, Sigma = I/2.
+
+    Parameters
+    ----------
+    s : float
+        Time; np.inf gives the limit.
+    lr0, lr_decay : float
+        As in :func:`sgd_path`.
+    fisher : ndarray, shape (k, k)
+        Fisher information per unit time i, e.g. :func:`fisher_information` over T, divided by T.
+    gain : ndarray, shape (k, k), optional
+        The gain G. If None, G = i, the limit of the empirical gain of :func:`natural_step`.
+
+    Returns
+    -------
+    ndarray, shape (k, k)
+        Sigma_s, all np.inf if some eigenvalue of A is at most c_s (the error then decays slower than sqrt(lr_s)).
+    """
+    G_inv = np.linalg.inv(fisher if gain is None else gain)
+    A, S = G_inv @ fisher, G_inv @ fisher @ G_inv
+    c = lr_decay/(2*lr0*np.maximum(s, 1)**(1 - lr_decay))
+    if np.min(np.linalg.eigvals(A).real) <= c:
+        return np.full_like(A, np.inf)
+    return solve_continuous_lyapunov(A - c*np.eye(len(A)), S)
+
+def sgd_error_variance(s, h, lr0, lr_decay, phi2, beta):
+    """Variance of p_hat_s - p at time s for an online estimate started at the true value.
+
+    Iterates the error recursion of :func:`sgd_clt_variance` with phi^2 replaced by E[phi^2],
+
+        Var <- (1 - lr i h)^2 Var + lr^2 i h,    i = (beta/2) E[phi^2],
+
+    from Var = 0, so unlike v_s it needs no large-s approximation. For :func:`sgd_step_shared` with
+    systems of N particles, the variance is this over N.
+
+    Parameters
+    ----------
+    s, h : float
+        Time and time step.
+    lr0, lr_decay, phi2, beta : float
+        As in :func:`sgd_clt_variance`.
+    """
+    i = beta/2*phi2
+    var = 0.0
+    for k in range(int(round(s/h))):
+        lr = learning_rate(k*h, lr0, lr_decay)
+        var = (1 - lr*i*h)**2*var + lr**2*i*h
+    return var
 
 
 def likelihood_coefficients(paths, pop, names, params, means):

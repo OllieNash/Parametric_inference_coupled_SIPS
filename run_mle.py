@@ -53,8 +53,13 @@ if PRESET == "coupled":
     theta_hat, gamma_hat = np.linalg.solve(Q.sum(axis=0), l.sum(axis=0))
     print(f"Joint MLE from Y: theta_2 {theta_hat}, gamma {gamma_hat} (true {params['theta_2']}, {params['gamma']})")
 
-    surface_values = np.linspace(-5,5,500)
+    #Square window midway between the estimate and the true value, containing both. When the parameters are not
+    #identifiable the estimate can be far along the ridge from the true value
     true_point = (params["theta_2"], params["gamma"])
-    surface = likelihood_surface(paths, "y", names, (surface_values, surface_values), params, means)
-    plot_y_likelihood_surface3d(surface, surface_values, surface_values, theta_hat, gamma_hat, true_point)
-    plot_y_likelihood_contour(surface, surface_values, surface_values, theta_hat, gamma_hat, e_val, e_vec, true_point)
+    estimate = np.array([theta_hat, gamma_hat])
+    centre = (estimate + np.array(true_point))/2
+    half_width = max(5, 0.75*np.max(np.abs(estimate - np.array(true_point))))
+    theta_values, gamma_values = (np.linspace(c - half_width, c + half_width, 500) for c in centre)
+    surface = likelihood_surface(paths, "y", names, (theta_values, gamma_values), params, means)
+    plot_y_likelihood_surface3d(surface, theta_values, gamma_values, theta_hat, gamma_hat, true_point)
+    plot_y_likelihood_contour(surface, theta_values, gamma_values, theta_hat, gamma_hat, e_val, e_vec, true_point)
